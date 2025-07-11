@@ -1,0 +1,163 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: 'Serverless URL Shortener with AWS Lambda and DynamoDB'
+
+Globals:
+  Function:
+    Timeout: 30
+    Runtime: python3.9
+    Environment:
+      Variables:
+        DYNAMODB_TABLE: !Ref URLShortenerTable
+        BASE_URL: !Sub 'https://${ServerlessRestApi}.execute-api.${AWS::Region}.amazonaws.com/Prod'
+
+Parameters:
+  Environment:
+    Type: String
+    Default: prod
+    AllowedValues:
+      - dev
+      - staging
+      - prod
+    Description: Environment name
+
+Resources:
+  # DynamoDB Table
+  URLShortenerTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub 'URLShortenerTable-${Environment}'
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: short_code
+          AttributeType: S
+      KeySchema:
+        - AttributeName: short_code
+          KeyType: HASH
+      TimeToLiveSpecification:
+        AttributeName: ttl
+        Enabled: true
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Project
+          Value: URLShortener
+
+  # Lambda Function for URL Shortening
+  ShortenUrlFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub 'url-shortener-${Environment}'
+      CodeUri: lambda/
+      Handler: shortenr.lambda_handler
+      Description: 'Lambda function to create short URLs'
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref URLShortenerTable
+      Events:
+        ShortenUrl:
+          Type: Api
+          Properties:
+            Path: /
+            Method: post
+            Cors:
+              AllowMethods: "'POST, OPTIONS'"
+              AllowHeaders: "'Content-Type, Authorization'"
+              AllowOrigin: "'*'"
+        OptionsRequest:
+          Type: Api
+          Properties:
+            Path: /
+            Method: options
+            Cors:
+              AllowMethods: "'POST, OPTIONS'"
+              AllowHeaders: "'Content-Type, Authorization'"
+              AllowOrigin: "'*'"
+
+  # Lambda Function for URL Redirection
+  RedirectUrlFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub 'url-redirector-${Environment}'
+      CodeUri: lambda/
+      Handler: redirector.lambda_handler
+      Description: 'Lambda function to redirect short URLs'
+      Policies:
+        - DynamoDBReadPolicy:
+            TableName: !Ref URLShortenerTable
+        - DynamoDBWritePolicy:
+            TableName: !Ref URLShortenerTable
+      Events:
+        RedirectUrl:
+          Type: Api
+          Properties:
+            Path: /{short_code}
+            Method: get
+
+  # S3 Bucket for Frontend (Optional)
+  FrontendBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub 'url-shortener-frontend-${Environment}-${AWS::AccountId}'
+      WebsiteConfiguration:
+        IndexDocument: index.html
+        ErrorDocument: error.html
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: false
+        BlockPublicPolicy: false
+        IgnorePublicAcls: false
+        RestrictPublicBuckets: false
+      Tags:
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Project
+          Value: URLShortener
+
+  # S3 Bucket Policy for Public Read Access
+  FrontendBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref FrontendBucket
+      PolicyDocument:
+        Statement:
+          - Sid: PublicReadGetObject
+            Effect: Allow
+            Principal: '*'
+            Action: 's3:GetObject'
+            Resource: !Sub '${FrontendBucket}/*'
+
+  # CloudWatch Log Groups
+  ShortenUrlLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub '/aws/lambda/url-shortener-${Environment}'
+      RetentionInDays: 14
+
+  RedirectUrlLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub '/aws/lambda/url-redirector-${Environment}'
+      RetentionInDays: 14
+
+Outputs:
+  ApiGatewayUrl:
+    Description: 'API Gateway endpoint URL'
+    Value: !Sub 'https://${ServerlessRestApi}.execute-api.${AWS::Region}.amazonaws.com/Prod/'
+    Export:
+      Name: !Sub '${AWS::StackName}-ApiUrl'
+
+  ShortenUrlEndpoint:
+    Description: 'URL Shortening endpoint'
+    Value: !Sub 'https://${ServerlessRestApi}.execute-api.${AWS::Region}.amazonaws.com/Prod/'
+
+  FrontendUrl:
+    Description: 'Frontend website URL'
+    Value: !Sub 'http://${FrontendBucket}.s3-website-${AWS::Region}.amazonaws.com'
+    Export:
+      Name: !Sub '${AWS::StackName}-FrontendUrl'
+
+  DynamoDBTable:
+    Description: 'DynamoDB table name'
+    Value: !Ref URLShortenerTable
+    Export:
+      Name: !Sub '${AWS::StackName}-TableName'
